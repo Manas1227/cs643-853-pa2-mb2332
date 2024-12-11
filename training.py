@@ -2,97 +2,137 @@ import findspark
 findspark.init()
 findspark.find()
 
-#Loading the libraries
-import pyspark
-from pyspark.mllib.tree import RandomForest, RandomForestModel
-from pyspark.mllib.util import MLUtils
-from pyspark import SparkContext, SparkConf
 from pyspark.sql import SparkSession
-
-from pyspark.ml.feature import VectorAssembler
-from pyspark.mllib.regression import LabeledPoint
-from pyspark.sql.functions import col
-from pyspark.mllib.linalg import Vectors
-from pyspark import SparkContext, SparkConf
-from pyspark.sql.session import SparkSession	
-from pyspark.mllib.evaluation import MulticlassMetrics
+from pyspark.ml.classification import RandomForestClassifier, LogisticRegression
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
 from pyspark.ml import Pipeline
-import numpy as np
-import pandas as pd
-from sklearn.metrics import f1_score
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from pyspark.ml.feature import StringIndexer, VectorAssembler
+import time
+import sys
 
+def prepare_data(input_data):
+    try:
+        # Update column names to remove quotes if present
+        new_columns = [col.replace('"', '') for col in input_data.columns]
+        input_data = input_data.toDF(*new_columns)
 
-#Starting the spark session
-conf = pyspark.SparkConf().setAppName('winequality').setMaster('local')
-sc = pyspark.SparkContext(conf=conf)
-spark = SparkSession(sc)
+        label_column = 'quality'
 
-#Loading the dataset
-df = spark.read.format("csv").load("s3://winemodelbucket/TrainingDataset.csv" , header = True ,sep =";")
-df.printSchema()
-df.show()
+        # Index the 'quality' column
+        indexer = StringIndexer(inputCol=label_column, outputCol="label")
+        input_data = indexer.fit(input_data).transform(input_data)
 
-#changing the 'quality' column name to 'label'
-for col_name in df.columns[1:-1]+['""""quality"""""']:
-    df = df.withColumn(col_name, col(col_name).cast('float'))
-df = df.withColumnRenamed('""""quality"""""', "label")
+        # Select relevant feature columns
+        feature_columns = [col for col in input_data.columns if col != label_column]
 
+        # Create a VectorAssembler to combine feature columns
+        assembler = VectorAssembler(inputCols=feature_columns, outputCol="features")
 
-#getting the features and label seperately and converting it to numpy array
-features =np.array(df.select(df.columns[1:-1]).collect())
-label = np.array(df.select('label').collect())
+        # Apply the assembler
+        assembled_data = assembler.transform(input_data)
 
-#creating the feature vector
-VectorAssembler = VectorAssembler(inputCols = df.columns[1:-1] , outputCol = 'features')
-df_tr = VectorAssembler.transform(df)
-df_tr = df_tr.select(['features','label'])
+        return assembled_data
+    except Exception as e:
+        print(f"Error preparing data: {e}")
+        sys.exit(1)
 
-#The following function creates the labeledpoint and parallelize it to convert it into RDD
-def to_labeled_point(sc, features, labels, categorical=False):
-    labeled_points = []
-    for x, y in zip(features, labels):        
-        lp = LabeledPoint(y, x)
-        labeled_points.append(lp)
-    return sc.parallelize(labeled_points) 
+def train_model(train_data_path, validation_data_path, output_model):
+    try:
+        # Initialize Spark session
+        spark = SparkSession.builder \
+            .appName("WineQualityTraining") \
+            .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+            .getOrCreate()
 
-#rdd converted dataset
-dataset = to_labeled_point(sc, features, label)
+        bucketname = "winemodelbucket"
 
-#Splitting the dataset into train and test
-training, test = dataset.randomSplit([0.7, 0.3],seed =11)
+        train_data = f"s3a://{bucketname}/{train_data_path}"
+        validation_data = f"s3a://{bucketname}/{validation_data_path}"
 
+        # Load datasets
+        training_raw_data = spark.read.csv(train_data, header=True, inferSchema=True, sep=";")
+        validation_raw_data = spark.read.csv(validation_data, header=True, inferSchema=True, sep=";")
 
-#Creating a random forest training classifier
-RFmodel = RandomForest.trainClassifier(training, numClasses=10, categoricalFeaturesInfo={}, numTrees=21, featureSubsetStrategy="auto", impurity='gini', maxDepth=30, maxBins=32)
+        train_data = prepare_data(training_raw_data)
+        validation_data = prepare_data(validation_raw_data)
 
-#predictions
-predictions = RFmodel.predict(test.map(lambda x: x.features))
-#predictionAndLabels = test.map(lambda x: (float(model.predict(x.features)), x.label))
+        # Define models
+        rf = RandomForestClassifier(labelCol="label", featuresCol="features")
+        lr = LogisticRegression(labelCol="label", featuresCol="features")
+        models = [rf, lr]
 
-#getting a RDD of label and predictions
-labelsAndPredictions = test.map(lambda lp: lp.label).zip(predictions)
+        # Create parameter grids
+        paramGrids = [
+            ParamGridBuilder()
+                .addGrid(rf.numTrees, [10, 20, 30])
+                .addGrid(rf.maxDepth, [5, 10])
+                .build(),
+            ParamGridBuilder()
+                .addGrid(lr.maxIter, [10, 20, 30])
+                .addGrid(lr.regParam, [0.1, 0.01])
+                .build()
+        ]
 
-labelsAndPredictions_df = labelsAndPredictions.toDF()
-#cpnverting rdd ==> spark dataframe ==> pandas dataframe 
-labelpred = labelsAndPredictions.toDF(["label", "Prediction"])
-labelpred.show()
-labelpred_df = labelpred.toPandas()
+        # Define evaluator
+        evaluator = MulticlassClassificationEvaluator(
+            labelCol="label", predictionCol="prediction", metricName="f1"
+        )
 
+        results = []
+        start_time = time.time()
 
-#Calculating the F1score
-F1score = f1_score(labelpred_df['label'], labelpred_df['Prediction'], average='micro')
-print("F1- score: ", F1score)
-print(confusion_matrix(labelpred_df['label'],labelpred_df['Prediction']))
-print(classification_report(labelpred_df['label'],labelpred_df['Prediction']))
-print("Accuracy" , accuracy_score(labelpred_df['label'], labelpred_df['Prediction']))
+        for i, model in enumerate(models):
+            print(f"Training model {i + 1} ({model.__class__.__name__})")
 
-#calculating the test error
-testErr = labelsAndPredictions.filter(
-    lambda lp: lp[0] != lp[1]).count() / float(test.count())    
-print('Test Error = ' + str(testErr))
+            # Create a pipeline
+            pipeline = Pipeline(stages=[model])
 
-#save training model
-RFmodel.save(sc, 's3://winemodelbucket/trainingmodel.model')
+            crossvalidate = CrossValidator(
+                estimator=pipeline,
+                estimatorParamMaps=paramGrids[i],
+                evaluator=evaluator,
+                numFolds=3
+            )
 
+            # Fit the model
+            cvModel = crossvalidate.fit(train_data)
 
+            # Predict on validation data
+            predictions = cvModel.transform(validation_data)
+
+            # Evaluate metrics
+            accuracy = evaluator.evaluate(predictions, {evaluator.metricName: "accuracy"})
+            recall = evaluator.evaluate(predictions, {evaluator.metricName: "weightedRecall"})
+            f1_score = evaluator.evaluate(predictions, {evaluator.metricName: "f1"})
+
+            results.append({
+                "Model": model.__class__.__name__,
+                "Accuracy": accuracy,
+                "Recall": recall,
+                "F1 Score": f1_score
+            })
+
+        # Save the best model if this is the last iteration
+        best_model = cvModel.bestModel
+        best_model_path = f"s3a://{bucketname}/{output_model}"
+        best_model.save(best_model_path)
+
+        # Log overall results
+        print("Training completed in {:.2f} seconds".format(time.time() - start_time))
+
+        for result in results:
+            print(result)
+
+        # Stop Spark session
+        spark.stop()
+    except Exception as e:
+        print(f"Error during model training: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    train_data_path = "TrainingDataset.csv"
+    validation_data_path = "ValidationDataset.csv"
+    output_model = "trainingmodel.model"
+
+    train_model(train_data_path, validation_data_path, output_model)
