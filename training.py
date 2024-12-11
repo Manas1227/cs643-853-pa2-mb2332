@@ -1,7 +1,3 @@
-import findspark
-findspark.init()
-findspark.find()
-
 from pyspark.sql import SparkSession
 from pyspark.ml.classification import RandomForestClassifier, LogisticRegression
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
@@ -66,11 +62,9 @@ def train_model(train_data_path, validation_data_path, output_model):
         paramGrids = [
             ParamGridBuilder()
                 .addGrid(rf.numTrees, [10, 20, 30])
-                .addGrid(rf.maxDepth, [5, 10])
                 .build(),
             ParamGridBuilder()
                 .addGrid(lr.maxIter, [10, 20, 30])
-                .addGrid(lr.regParam, [0.1, 0.01])
                 .build()
         ]
 
