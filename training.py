@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.ml.classification import RandomForestClassifier, LogisticRegression
+from pyspark.ml.classification import RandomForestClassifier, LogisticRegression, DecisionTreeClassifier
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
 from pyspark.ml import Pipeline
@@ -56,7 +56,8 @@ def train_model(train_data_path, validation_data_path, output_model):
         # Define models
         rf = RandomForestClassifier(labelCol="label", featuresCol="features")
         lr = LogisticRegression(labelCol="label", featuresCol="features")
-        models = [rf, lr]
+        dt = DecisionTreeClassifier(labelCol="label", featuresCol="features")
+        models = [rf, lr, dt]
 
         # Create parameter grids
         paramGrids = [
@@ -65,6 +66,9 @@ def train_model(train_data_path, validation_data_path, output_model):
                 .build(),
             ParamGridBuilder()
                 .addGrid(lr.maxIter, [10, 20, 30])
+                .build(),
+            ParamGridBuilder()
+                .addGrid(dt.maxDepth, [5, 10, 15])
                 .build()
         ]
 
@@ -109,6 +113,8 @@ def train_model(train_data_path, validation_data_path, output_model):
 
         # Save the best model if this is the last iteration
         best_model = cvModel.bestModel
+
+        # Save the best model to S3
         best_model_path = f"s3a://{bucketname}/{output_model}"
         best_model.save(best_model_path)
 
