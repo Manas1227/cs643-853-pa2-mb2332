@@ -1,5 +1,2 @@
-findspark
 pyspark
 numpy
-pandas
-sklearn
