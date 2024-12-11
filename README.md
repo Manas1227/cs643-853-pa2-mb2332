@@ -22,7 +22,6 @@ To clone the github remote repository to the EC2 instance (valid until Jan 9, 20
 ```
 git clone https://github.com/Manas1227/cs643-853-pa2-mb2332
 ````
-token: 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
 
 install dependencies all together
 ```
@@ -43,18 +42,15 @@ go to EC2 instance page
 
 connect with master node
 
-after log in to master node create prediction program file
+To install git on the EC2 instance
 ```
-touch prediction.py
-vi prediction.py
+sudo yum install git 
 ```
-write prediction program and save the prediction file
 
-create requirements file to store list of all required libraries 
+To clone the github remote repository to the EC2 instance (valid until Jan 9, 2025)
 ```
-touch requirements.txt
-vi requirements.txt
-```
+git clone https://github.com/Manas1227/cs643-853-pa2-mb2332
+````
 
 install dependencies all together
 ```
