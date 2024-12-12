@@ -2,88 +2,79 @@ import findspark
 findspark.init()
 findspark.find()
 
-#Loading the libraries
-import pyspark
-from pyspark.mllib.tree import RandomForest, RandomForestModel
-from pyspark.mllib.util import MLUtils
-from pyspark import SparkContext, SparkConf
 from pyspark.sql import SparkSession
-from pyspark.ml.feature import VectorAssembler
-from pyspark.mllib.regression import LabeledPoint
-from pyspark.sql.functions import col
-from pyspark.mllib.linalg import Vectors
-from pyspark import SparkContext, SparkConf
-from pyspark.sql.session import SparkSession	
-from pyspark.mllib.evaluation import MulticlassMetrics
-from pyspark.ml import Pipeline
+from pyspark.ml import PipelineModel
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 import sys
-import pandas as pd
-import numpy as np
-from sklearn.metrics import f1_score
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from pyspark.ml.feature import StringIndexer
+from pyspark.ml.feature import VectorAssembler
 
+def prepare_data(input_data):
 
-#Starting the spark session
-conf = pyspark.SparkConf().setAppName('winequality').setMaster('local')
-sc = pyspark.SparkContext(conf=conf)
-spark = SparkSession(sc)
+    # Load wine quality dataset
+    new_columns = [col.replace('"', '') for col in input_data.columns]
+    input_data = input_data.toDF(*new_columns)
 
-#path  = sys.argv[1]
-#loading the validation dataset
-val = spark.read.format("csv").load("s3://winemodelbucket/ValidationDataset.csv", header = True , sep=";")
-val.printSchema()
-val.show()
+    label_column = 'quality'
 
+    # 'quality' is a categorical variable, indexing it
+    indexer = StringIndexer(inputCol=label_column, outputCol="label")
+    input_data = indexer.fit(input_data).transform(input_data)
+
+    # Selecting relevant feature columns
+    feature_columns = [col for col in input_data.columns if col != label_column]
+
+    # VectorAssembler to assemble feature columns into a single 'features' column
+    assembler = VectorAssembler(inputCols=feature_columns, outputCol="features")
+
+    # Apply the VectorAssembler
+    assembled_data = assembler.transform(input_data)
+
+    return assembled_data
+
+def predict_using_model(test_data_path, output_model):
     
-#changing the 'quality' column name to 'label'
-for col_name in val.columns[1:-1]+['""""quality"""""']:
-    val = val.withColumn(col_name, col(col_name).cast('float'))
-val = val.withColumnRenamed('""""quality"""""', "label")
+	# Initialize Spark session
+    spark = SparkSession.builder.appName("WineQualityPrediction").config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem").getOrCreate()
+	
+	# S3 bucket which will have the input files
+    bucketname = "winemodelbucket"
 
-#getting the features and label seperately and converting it to numpy array
-features =np.array(val.select(val.columns[1:-1]).collect())
-label = np.array(val.select('label').collect())
+    # Load data from S3 bucket using the input path provided
+    test_data = f"s3a://{bucketname}/{test_data_path}"
 
-#creating the feature vector
-VectorAssembler = VectorAssembler(inputCols = val.columns[1:-1] , outputCol = 'features')
-df_tr = VectorAssembler.transform(val)
-df_tr = df_tr.select(['features','label'])
+    test_raw_data = spark.read.csv(test_data, header=True, inferSchema=True, sep=";")
 
-#The following function creates the labeledpoint and parallelize it to convert it into RDD
-def to_labeled_point(sc, features, labels, categorical=False):
-    labeled_points = []
-    for x, y in zip(features, labels):        
-        lp = LabeledPoint(y, x)
-        labeled_points.append(lp)
-    return sc.parallelize(labeled_points) 
+    # Load prepared test data
+    test_data = prepare_data(test_raw_data)
 
-#rdd converted dataset
-dataset = to_labeled_point(sc, features, label)
+    # Load the trained model from S3
+    model_path = f"s3a://{bucketname}/{output_model}"
+    trained_model = PipelineModel.load(model_path)
 
-#loading the model from s3
-RFModel = RandomForestModel.load(sc, "s3://winemodelbucket/trainingmodel.model/")
+    # Make predictions
+    predictions = trained_model.transform(test_data)
 
-print("model loaded successfully")
-predictions = RFModel.predict(dataset.map(lambda x: x.features))
+    # Define evaluator
+    evaluator = MulticlassClassificationEvaluator(
+        labelCol="label", predictionCol="prediction", metricName="f1"
+    )
 
-#getting a RDD of label and predictions
-labelsAndPredictions = dataset.map(lambda lp: lp.label).zip(predictions)
- 
-labelsAndPredictions_df = labelsAndPredictions.toDF()
-#cpnverting rdd ==> spark dataframe ==> pandas dataframe 
-labelpred = labelsAndPredictions.toDF(["label", "Prediction"])
-labelpred.show()
-labelpred_df = labelpred.toPandas()
+    # Evaluate the predictions
+    accuracy = evaluator.evaluate(predictions, {evaluator.metricName: "accuracy"})
+    f1_score = evaluator.evaluate(predictions, {evaluator.metricName: "f1"})
+
+    print(f"Test Accuracy: {accuracy}")
+    print(f"Test F1 Score: {f1_score}")
 
 
-#Calculating the F1score
-F1score = f1_score(labelpred_df['label'], labelpred_df['Prediction'], average='micro')
-print("F1- score: ", F1score)
-print(confusion_matrix(labelpred_df['label'],labelpred_df['Prediction']))
-print(classification_report(labelpred_df['label'],labelpred_df['Prediction']))
-print("Accuracy" , accuracy_score(labelpred_df['label'], labelpred_df['Prediction']))
+    # Stop Spark session
+    spark.stop()
 
-#calculating the test error
-testErr = labelsAndPredictions.filter(
-    lambda lp: lp[0] != lp[1]).count() / float(dataset.count())    
-print('Test Error = ' + str(testErr))
+
+if __name__ == "__main__":
+  
+    test_data_path = "ValidationDataset.csv"
+    output_model = "trainingmodel.model"
+
+    predict_using_model(test_data_path, output_model)
