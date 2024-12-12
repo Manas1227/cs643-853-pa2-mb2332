@@ -1,35 +1,28 @@
-# Base image - Ubuntu
-FROM ubuntu:latest
+# Use an official Python runtime as a parent image
+FROM python:3.9-slim
 
-# Update packages and install required dependencies
+# Set environment variables to prevent Python from writing .pyc files
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install Java (required for Spark) and other dependencies
 RUN apt-get update && apt-get install -y \
-    openjdk-8-jdk \
-    python3 \
-    python3-pip \
-    wget \
+    openjdk-11-jdk \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set environment variables
-ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
-ENV SPARK_HOME=/opt/spark
-ENV PATH=$SPARK_HOME/bin:$PATH
-ENV PYSPARK_PYTHON=python3
+# Set JAVA_HOME environment variable
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+ENV PATH=$JAVA_HOME/bin:$PATH
 
-# Download and install Spark
-RUN wget -qO- https://downloads.apache.org/spark/spark-3.3.3/spark-3.3.3-bin-hadoop3.tgz | tar xvz -C /opt \
-    && mv /opt/spark-3.3.3-bin-hadoop3 $SPARK_HOME \
-    && chown -R root:root $SPARK_HOME
+# Install PySpark
+RUN pip install pyspark findspark boto3
 
-# Set up working directory
+# Set the working directory
 WORKDIR /app
 
-# Copy the Python script and requirements file
-COPY prediction.py /app/
-COPY requirements.txt /app/
+# Copy training and prediction scripts to the container
+COPY training_manas.py prediction_manas.py /app/
 
-# Install dependencies
-RUN pip install --upgrade pip && pip install -r requirements.txt
-RUN chmod 774 *
-
-# Start application
-CMD ["spark-submit", "prediction.py"]
+# Command to execute (default: show help message)
+CMD ["python", "--help"]
