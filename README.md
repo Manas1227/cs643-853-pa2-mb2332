@@ -65,7 +65,7 @@ Clone the repository to the EC2 instance:
 ```
 git clone https://github.com/Manas1227/cs643-853-pa2-mb2332
 cd cs643-853-pa2-mb2332
-````
+```
 
 ### Check Python and Install Required Versions
 Check Python version and install it if necessary:
